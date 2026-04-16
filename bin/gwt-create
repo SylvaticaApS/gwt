@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
+import argparse
+import secrets
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+DEFAULT_BASE = "HEAD"
+DEFAULT_WORKTREE_DIRNAME = "worktrees"
+
+
+def run_git(repo_root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if check and result.returncode != 0:
+        command = " ".join(["git", "-C", str(repo_root), *args])
+        stderr = result.stderr.strip() or result.stdout.strip() or "git command failed"
+        raise RuntimeError(f"{command}: {stderr}")
+
+    return result
+
+
+def get_repo_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "not inside a git repository"
+        raise RuntimeError(stderr)
+
+    return Path(result.stdout.strip())
+
+
+def resolve_base(repo_root: Path, requested_base: str | None) -> tuple[str, str]:
+    base_ref = requested_base or DEFAULT_BASE
+    result = run_git(
+        repo_root,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        f"{base_ref}^{{commit}}",
+        check=False,
+    )
+
+    if result.returncode != 0:
+        head_result = run_git(
+            repo_root,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "HEAD^{commit}",
+            check=False,
+        )
+        if head_result.returncode != 0:
+            raise RuntimeError("current repository has no commits yet")
+
+        raise RuntimeError(f"base commit-ish '{base_ref}' did not resolve to a commit")
+
+    return base_ref, result.stdout.strip()
+
+
+def make_default_path(repo_root: Path) -> Path:
+    worktree_root = repo_root.parent / DEFAULT_WORKTREE_DIRNAME
+    worktree_root.mkdir(parents=True, exist_ok=True)
+
+    for _ in range(20):
+        candidate = worktree_root / secrets.token_hex(6)
+        if not candidate.exists():
+            return candidate
+
+    raise RuntimeError("could not allocate a unique default worktree path")
+
+
+def resolve_target_path(repo_root: Path, current_dir: Path, path_override: str | None) -> Path:
+    if not path_override:
+        return make_default_path(repo_root)
+
+    candidate = Path(path_override).expanduser()
+    if not candidate.is_absolute():
+        candidate = (current_dir / candidate).resolve()
+    else:
+        candidate = candidate.resolve()
+
+    return candidate
+
+
+def ensure_path_available(target_path: Path) -> None:
+    if target_path.exists():
+        raise RuntimeError(f"target path already exists: {target_path}")
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def is_detached_head(target_path: Path) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(target_path), "symbolic-ref", "-q", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode != 0
+
+
+def emit_shell_assignment(name: str, value: str) -> str:
+    return f"{name}={shlex.quote(value)}"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Create a detached git worktree and print shell-safe results.")
+    parser.add_argument(
+        "--base",
+        help=f"Base commit-ish. Defaults to {DEFAULT_BASE}.",
+    )
+    parser.add_argument(
+        "--path",
+        help="Target path for the new worktree. Defaults to $REPO_ROOT/../worktrees/<random-id>.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        current_dir = Path.cwd()
+        repo_root = get_repo_root()
+        resolved_base, commit_sha = resolve_base(repo_root, args.base)
+        target_path = resolve_target_path(repo_root, current_dir, args.path)
+        ensure_path_available(target_path)
+        run_git(repo_root, "worktree", "add", "--detach", str(target_path), commit_sha)
+
+        if not is_detached_head(target_path):
+            raise RuntimeError(f"created worktree is not detached: {target_path}")
+    except RuntimeError as error:
+        print(f"gwt-create: {error}", file=sys.stderr)
+        return 1
+
+    print(emit_shell_assignment("repo_root", str(repo_root)))
+    print(emit_shell_assignment("worktree_path", str(target_path)))
+    print(emit_shell_assignment("base_ref", resolved_base))
+    print(emit_shell_assignment("commit_sha", commit_sha))
+    print("detached_head=true")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

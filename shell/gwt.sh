@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+
+__gwt_script_path() {
+    readlink -f "${BASH_SOURCE[0]}"
+}
+
+__gwt_repo_root() {
+    local script_path script_dir
+    script_path="$(__gwt_script_path)"
+    script_dir=$(dirname "$script_path")
+    cd "$script_dir/.." >/dev/null 2>&1 && pwd
+}
+
+__gwt_create_command() {
+    printf '%s\n' "${GWT_CREATE_COMMAND:-$(__gwt_repo_root)/bin/gwt-create}"
+}
+
+__gwt_usage() {
+    cat <<'EOF'
+Usage:
+  gwt
+  gwt <commit-ish>
+  gwt --path <path>
+  gwt <commit-ish> --path <path>
+
+Creates a detached git worktree from HEAD by default, or from the supplied commit-ish,
+then changes the current shell directory into the new worktree.
+EOF
+}
+
+__gwt_load_git_completion() {
+    if declare -F __git_complete_refs >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ -r /usr/share/bash-completion/completions/git ]; then
+        # shellcheck disable=SC1091
+        . /usr/share/bash-completion/completions/git
+    fi
+
+    declare -F __git_complete_refs >/dev/null 2>&1
+}
+
+__gwt_complete_path() {
+    local path_cur="${1:-$cur}"
+    local prefix="${2:-}"
+    local reply
+
+    COMPREPLY=()
+    while IFS= read -r reply; do
+        COMPREPLY+=("${prefix}${reply}")
+    done < <(compgen -f -- "$path_cur")
+
+    if declare -F compopt >/dev/null 2>&1; then
+        compopt -o filenames
+    fi
+}
+
+__gwt_complete_refs() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        COMPREPLY=()
+        return
+    fi
+
+    if __gwt_load_git_completion; then
+        __git_complete_refs
+        return
+    fi
+
+    COMPREPLY=($(compgen -W "$(git for-each-ref --format='%(refname:short)' refs/heads refs/tags refs/remotes 2>/dev/null) HEAD ORIG_HEAD FETCH_HEAD" -- "$cur"))
+}
+
+_gwt_complete() {
+    local cur prev cword
+    local i word positional_count=0 expect_path=0
+
+    cur=${COMP_WORDS[COMP_CWORD]:-}
+    prev=${COMP_WORDS[COMP_CWORD - 1]:-}
+    cword=$COMP_CWORD
+
+    if [ "$prev" = "--path" ]; then
+        __gwt_complete_path
+        return
+    fi
+
+    case "$cur" in
+        --path=*)
+            __gwt_complete_path "${cur#--path=}" "--path="
+            return
+            ;;
+        -*)
+            COMPREPLY=($(compgen -W "--path --help -h" -- "$cur"))
+            return
+            ;;
+    esac
+
+    for ((i = 1; i < cword; i++)); do
+        word=${COMP_WORDS[i]}
+        if [ $expect_path -eq 1 ]; then
+            expect_path=0
+            continue
+        fi
+
+        case "$word" in
+            --path)
+                expect_path=1
+                ;;
+            --path=*)
+                ;;
+            -*)
+                ;;
+            *)
+                positional_count=$((positional_count + 1))
+                ;;
+        esac
+    done
+
+    if [ $positional_count -eq 0 ]; then
+        case "$cur" in
+            /*|./*|../*|~/*)
+                __gwt_complete_path
+                ;;
+            *)
+                __gwt_complete_refs
+                ;;
+        esac
+        return
+    fi
+
+    COMPREPLY=()
+}
+
+gwt() {
+    local create_cmd base="" path="" output
+    local repo_root="" worktree_path="" base_ref="" commit_sha="" detached_head=""
+
+    create_cmd="$(__gwt_create_command)"
+    if [ ! -x "$create_cmd" ]; then
+        printf 'gwt: missing executable: %s\n' "$create_cmd" >&2
+        return 127
+    fi
+
+    if [ $# -eq 1 ]; then
+        case "$1" in
+            /*|./*|../*|~/*)
+                path=$1
+                set --
+                ;;
+        esac
+    fi
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                __gwt_usage
+                return 0
+                ;;
+            --path)
+                if [ $# -lt 2 ]; then
+                    printf 'gwt: --path requires a value\n' >&2
+                    return 2
+                fi
+                path=$2
+                shift 2
+                continue
+                ;;
+            --path=*)
+                path=${1#--path=}
+                shift
+                continue
+                ;;
+            -*)
+                printf 'gwt: unsupported option: %s\n' "$1" >&2
+                return 2
+                ;;
+            *)
+                if [ -n "$base" ]; then
+                    printf 'gwt: unexpected argument: %s\n' "$1" >&2
+                    return 2
+                fi
+                base=$1
+                shift
+                continue
+                ;;
+        esac
+    done
+
+    local cmd=("$create_cmd")
+    if [ -n "$base" ]; then
+        cmd+=(--base "$base")
+    fi
+    if [ -n "$path" ]; then
+        cmd+=(--path "$path")
+    fi
+
+    output="$("${cmd[@]}")"
+    local status=$?
+    if [ $status -ne 0 ]; then
+        return $status
+    fi
+
+    eval "$output"
+
+    if [ -z "$worktree_path" ]; then
+        printf 'gwt: did not receive worktree path from %s\n' "$create_cmd" >&2
+        return 1
+    fi
+
+    if [ "$detached_head" != "true" ]; then
+        printf 'gwt: refusing to cd into a non-detached worktree: %s\n' "$worktree_path" >&2
+        return 1
+    fi
+
+    builtin cd -- "$worktree_path" || return 1
+    printf 'gwt: %s (%s at %s)\n' "$worktree_path" "$base_ref" "$commit_sha"
+}
+
+complete -o bashdefault -o default -F _gwt_complete gwt
