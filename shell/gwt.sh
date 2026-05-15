@@ -42,14 +42,21 @@ __gwt_worktree_context() {
     __gwt_current_worktree=""
     __gwt_is_linked_worktree="false"
 
-    local current entry entry_resolved
+    local current entry entry_path entry_resolved seen_worktree=0
     current=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
     current=$(__gwt_resolve_dir "$current") || return 1
 
     while IFS= read -r -d '' entry; do
         case "$entry" in
             worktree\ *)
-                entry_resolved=$(__gwt_resolve_dir "${entry#worktree }") || return 1
+                entry_path=${entry#worktree }
+                seen_worktree=$((seen_worktree + 1))
+                if ! entry_resolved=$(__gwt_resolve_dir "$entry_path"); then
+                    if [ $seen_worktree -eq 1 ]; then
+                        return 1
+                    fi
+                    continue
+                fi
                 if [ -z "$__gwt_main_worktree" ]; then
                     __gwt_main_worktree=$entry_resolved
                 fi
