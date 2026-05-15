@@ -44,6 +44,21 @@ setup_repo() {
     resolve_dir "$repo"
 }
 
+setup_bare_repo() {
+    local name=$1 seed bare
+    seed="$tmp_dir/$name/seed"
+    bare="$tmp_dir/$name/bare.git"
+    mkdir -p "$seed"
+    git -C "$seed" init -q
+    git -C "$seed" config user.email "gwt-test@example.com"
+    git -C "$seed" config user.name "gwt Test"
+    printf 'initial\n' >"$seed/file.txt"
+    git -C "$seed" add file.txt
+    git -C "$seed" commit -qm "initial"
+    git clone --bare "$seed" "$bare" >/dev/null 2>&1
+    resolve_dir "$bare"
+}
+
 assert_worktree_list_contains() {
     local repo=$1 worktree=$2
     git -C "$repo" worktree list --porcelain | grep -Fx "worktree $worktree" >/dev/null ||
@@ -174,6 +189,28 @@ test_stale_worktree_entries_are_tolerated() {
     assert_worktree_list_missing "$repo" "$remove_target"
 }
 
+test_bare_repository_source_is_not_return_target() {
+    local bare linked before after
+    bare=$(setup_bare_repo bare-source)
+    linked="$tmp_dir/bare-source/linked"
+
+    git -C "$bare" worktree add --detach "$linked" HEAD >/dev/null 2>&1
+
+    cd "$linked"
+    if gwt --remove >/dev/null 2>"$tmp_dir/bare-remove.err"; then
+        fail "gwt --remove should fail when there is no main worktree to return to"
+    fi
+    assert_eq "$linked" "$(pwd -P)" "failed gwt --remove should stay in the linked worktree for bare-backed repos"
+    [ -e "$linked" ] || fail "gwt --remove should not remove the linked worktree when there is no main worktree"
+
+    before=$(pwd -P)
+    gwt >/dev/null
+    after=$(pwd -P)
+
+    [ "$after" != "$bare" ] || fail "plain gwt should not return to a bare repository path"
+    [ "$after" != "$before" ] || fail "plain gwt from bare-backed linked worktree should fall back to creating a worktree"
+}
+
 test_create_from_main
 test_return_from_linked
 test_remove_from_linked
@@ -181,5 +218,6 @@ test_dirty_remove_fails_in_place
 test_creation_args_still_create_from_linked
 test_remove_from_main_fails
 test_stale_worktree_entries_are_tolerated
+test_bare_repository_source_is_not_return_target
 
 printf 'gwt integration tests passed\n'

@@ -42,36 +42,65 @@ __gwt_worktree_context() {
     __gwt_current_worktree=""
     __gwt_is_linked_worktree="false"
 
-    local current entry entry_path entry_resolved seen_worktree=0
+    local current entry record_path="" record_is_bare="false" record_count=0
+    local record_resolved
     current=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
     current=$(__gwt_resolve_dir "$current") || return 1
 
+    __gwt_finish_worktree_record() {
+        if [ -z "$record_path" ]; then
+            return 0
+        fi
+
+        record_count=$((record_count + 1))
+        if [ "$record_is_bare" = "true" ]; then
+            record_path=""
+            record_is_bare="false"
+            return 0
+        fi
+
+        if ! record_resolved=$(__gwt_resolve_dir "$record_path"); then
+            if [ $record_count -eq 1 ]; then
+                return 1
+            fi
+            record_path=""
+            record_is_bare="false"
+            return 0
+        fi
+
+        if [ $record_count -eq 1 ]; then
+            __gwt_main_worktree=$record_resolved
+        fi
+        if [ "$record_resolved" = "$current" ]; then
+            __gwt_current_worktree=$record_resolved
+        fi
+
+        record_path=""
+        record_is_bare="false"
+    }
+
     while IFS= read -r -d '' entry; do
         case "$entry" in
+            "")
+                __gwt_finish_worktree_record || return 1
+                ;;
             worktree\ *)
-                entry_path=${entry#worktree }
-                seen_worktree=$((seen_worktree + 1))
-                if ! entry_resolved=$(__gwt_resolve_dir "$entry_path"); then
-                    if [ $seen_worktree -eq 1 ]; then
-                        return 1
-                    fi
-                    continue
-                fi
-                if [ -z "$__gwt_main_worktree" ]; then
-                    __gwt_main_worktree=$entry_resolved
-                fi
-                if [ "$entry_resolved" = "$current" ]; then
-                    __gwt_current_worktree=$entry_resolved
-                fi
+                __gwt_finish_worktree_record || return 1
+                record_path=${entry#worktree }
+                ;;
+            bare)
+                record_is_bare="true"
                 ;;
         esac
     done < <(git worktree list --porcelain -z 2>/dev/null)
+    __gwt_finish_worktree_record || return 1
+    unset -f __gwt_finish_worktree_record
 
-    if [ -z "$__gwt_main_worktree" ] || [ -z "$__gwt_current_worktree" ]; then
+    if [ -z "$__gwt_current_worktree" ]; then
         return 1
     fi
 
-    if [ "$__gwt_current_worktree" != "$__gwt_main_worktree" ]; then
+    if [ -n "$__gwt_main_worktree" ] && [ "$__gwt_current_worktree" != "$__gwt_main_worktree" ]; then
         __gwt_is_linked_worktree="true"
     fi
 }
@@ -82,6 +111,13 @@ __gwt_return_to_main_worktree() {
     if ! __gwt_worktree_context; then
         if [ "$remove_current" = "true" ]; then
             printf 'gwt: not inside a git worktree\n' >&2
+        fi
+        return 1
+    fi
+
+    if [ -z "$__gwt_main_worktree" ]; then
+        if [ "$remove_current" = "true" ]; then
+            printf 'gwt: no main worktree to return to for this repository\n' >&2
         fi
         return 1
     fi
