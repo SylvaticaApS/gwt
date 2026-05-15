@@ -151,11 +151,35 @@ test_remove_from_main_fails() {
     assert_eq "$repo" "$(pwd -P)" "failed gwt --remove from main should stay in main"
 }
 
+test_stale_worktree_entries_are_tolerated() {
+    local repo stale valid remove_target
+    repo=$(setup_repo stale-worktrees)
+    stale="$tmp_dir/stale-worktrees/stale"
+    valid="$tmp_dir/stale-worktrees/valid"
+    remove_target="$tmp_dir/stale-worktrees/remove-target"
+
+    cd "$repo"
+    git -C "$repo" worktree add --detach "$stale" HEAD >/dev/null 2>&1
+    gwt --path "$valid" >/dev/null
+    rm -rf "$stale"
+
+    gwt >/dev/null
+    assert_eq "$repo" "$(pwd -P)" "plain gwt should tolerate stale linked worktree entries"
+
+    gwt --path "$remove_target" >/dev/null
+    gwt --remove >/dev/null
+
+    assert_eq "$repo" "$(pwd -P)" "gwt --remove should tolerate stale linked worktree entries"
+    [ ! -e "$remove_target" ] || fail "gwt --remove should delete the current linked worktree with stale entries present"
+    assert_worktree_list_missing "$repo" "$remove_target"
+}
+
 test_create_from_main
 test_return_from_linked
 test_remove_from_linked
 test_dirty_remove_fails_in_place
 test_creation_args_still_create_from_linked
 test_remove_from_main_fails
+test_stale_worktree_entries_are_tolerated
 
 printf 'gwt integration tests passed\n'
