@@ -19,13 +19,86 @@ __gwt_usage() {
     cat <<'EOF'
 Usage:
   gwt
+  gwt --remove
   gwt <commit-ish>
   gwt --path <path>
   gwt <commit-ish> --path <path>
 
 Creates a detached git worktree from HEAD by default, or from the supplied commit-ish,
 then changes the current shell directory into the new worktree.
+
+When run without creation arguments from a linked worktree, changes back to the
+main worktree. With --remove, safely removes the current linked worktree before
+changing back to the main worktree.
 EOF
+}
+
+__gwt_resolve_dir() {
+    cd "$1" >/dev/null 2>&1 && pwd -P
+}
+
+__gwt_worktree_context() {
+    __gwt_main_worktree=""
+    __gwt_current_worktree=""
+    __gwt_is_linked_worktree="false"
+
+    local current entry entry_resolved
+    current=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+    current=$(__gwt_resolve_dir "$current") || return 1
+
+    while IFS= read -r -d '' entry; do
+        case "$entry" in
+            worktree\ *)
+                entry_resolved=$(__gwt_resolve_dir "${entry#worktree }") || return 1
+                if [ -z "$__gwt_main_worktree" ]; then
+                    __gwt_main_worktree=$entry_resolved
+                fi
+                if [ "$entry_resolved" = "$current" ]; then
+                    __gwt_current_worktree=$entry_resolved
+                fi
+                ;;
+        esac
+    done < <(git worktree list --porcelain -z 2>/dev/null)
+
+    if [ -z "$__gwt_main_worktree" ] || [ -z "$__gwt_current_worktree" ]; then
+        return 1
+    fi
+
+    if [ "$__gwt_current_worktree" != "$__gwt_main_worktree" ]; then
+        __gwt_is_linked_worktree="true"
+    fi
+}
+
+__gwt_return_to_main_worktree() {
+    local remove_current=$1
+
+    if ! __gwt_worktree_context; then
+        if [ "$remove_current" = "true" ]; then
+            printf 'gwt: not inside a git worktree\n' >&2
+        fi
+        return 1
+    fi
+
+    if [ "$__gwt_is_linked_worktree" != "true" ]; then
+        if [ "$remove_current" = "true" ]; then
+            printf 'gwt: refusing to remove the main worktree: %s\n' "$__gwt_main_worktree" >&2
+            return 1
+        fi
+        return 1
+    fi
+
+    if [ "$remove_current" = "true" ]; then
+        if ! git -C "$__gwt_main_worktree" worktree remove "$__gwt_current_worktree"; then
+            return 1
+        fi
+    fi
+
+    builtin cd -- "$__gwt_main_worktree" || return 1
+    if [ "$remove_current" = "true" ]; then
+        printf 'gwt: removed %s and returned to %s\n' "$__gwt_current_worktree" "$__gwt_main_worktree"
+    else
+        printf 'gwt: returned to %s\n' "$__gwt_main_worktree"
+    fi
 }
 
 __gwt_load_git_completion() {
@@ -89,7 +162,7 @@ _gwt_complete() {
             return
             ;;
         -*)
-            COMPREPLY=($(compgen -W "--path --help -h" -- "$cur"))
+            COMPREPLY=($(compgen -W "--path --remove --help -h" -- "$cur"))
             return
             ;;
     esac
@@ -131,14 +204,8 @@ _gwt_complete() {
 }
 
 gwt() {
-    local create_cmd base="" path="" output
+    local create_cmd base="" path="" output remove_current="false"
     local repo_root="" worktree_path="" base_ref="" commit_sha="" detached_head=""
-
-    create_cmd="$(__gwt_create_command)"
-    if [ ! -x "$create_cmd" ]; then
-        printf 'gwt: missing executable: %s\n' "$create_cmd" >&2
-        return 127
-    fi
 
     if [ $# -eq 1 ]; then
         case "$1" in
@@ -169,6 +236,11 @@ gwt() {
                 shift
                 continue
                 ;;
+            --remove)
+                remove_current="true"
+                shift
+                continue
+                ;;
             -*)
                 printf 'gwt: unsupported option: %s\n' "$1" >&2
                 return 2
@@ -184,6 +256,25 @@ gwt() {
                 ;;
         esac
     done
+
+    if [ "$remove_current" = "true" ]; then
+        if [ -n "$base" ] || [ -n "$path" ]; then
+            printf 'gwt: --remove cannot be combined with creation arguments\n' >&2
+            return 2
+        fi
+        __gwt_return_to_main_worktree true
+        return $?
+    fi
+
+    if [ -z "$base" ] && [ -z "$path" ] && __gwt_return_to_main_worktree false; then
+        return 0
+    fi
+
+    create_cmd="$(__gwt_create_command)"
+    if [ ! -x "$create_cmd" ]; then
+        printf 'gwt: missing executable: %s\n' "$create_cmd" >&2
+        return 127
+    fi
 
     local cmd=("$create_cmd")
     if [ -n "$base" ]; then

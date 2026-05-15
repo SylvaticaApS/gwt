@@ -10,13 +10,16 @@ It:
 - creates the worktree under `$REPO_ROOT/../worktrees/<random-id>` by default;
 - accepts an explicit `--path` override;
 - changes the current shell directory into the new worktree;
-- provides bash completion for refs and `--path`.
+- returns from a linked worktree to the main worktree when run without creation arguments;
+- can safely remove the current linked worktree while returning to the main worktree;
+- provides bash completion for refs, `--path`, and `--remove`.
 
 ## Repository Layout
 
 - [bin/gwt-create](./bin/gwt-create): executable that creates the detached worktree and prints shell-safe output.
 - [shell/gwt.sh](./shell/gwt.sh): bash function and completion definition for `gwt`.
 - [install.sh](./install.sh): installs symlinks into `~/.local` and adds the `.bashrc` source hook if needed.
+- [tests/gwt-integration.bash](./tests/gwt-integration.bash): integration tests using temporary Git repositories.
 
 ## Install
 
@@ -55,10 +58,19 @@ exec bash -i
 
 ```bash
 gwt
+gwt --remove
 gwt HEAD~1
 gwt --path ../worktrees/manual-test
 gwt main --path /tmp/my-worktree
 ```
+
+From the main worktree, plain `gwt` creates and enters a detached linked
+worktree. From a linked worktree, plain `gwt` returns to the main worktree root.
+
+From a linked worktree, `gwt --remove` runs `git worktree remove` for the
+current linked worktree, then returns to the main worktree root if removal
+succeeds. Git's normal safety checks apply: dirty, untracked, or locked
+worktrees are not removed unless handled with Git directly.
 
 ## Notes
 
