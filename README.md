@@ -78,3 +78,4 @@ worktrees are not removed unless handled with Git directly.
 - A plain executable cannot `cd` the parent shell, which is why the shell integration lives in [shell/gwt.sh](./shell/gwt.sh).
 - If you update this repo, the installed command uses the updated files automatically because the home-directory install is symlink-based.
 - The default `gwt` flow expects the current repository to have at least one commit so `HEAD` resolves.
+- Linked worktrees backed only by a bare repository have no main worktree to return to, so `gwt --remove` refuses to remove them.
